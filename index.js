@@ -1,4 +1,4 @@
-const { STREAM_KEY, STREAM_SERVER } = require("./env");
+// Dependencies
 const ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
 const multer = require("multer");
 const express = require("express");
@@ -8,68 +8,97 @@ const { PassThrough } = require("stream");
 const ffmpeg = require("fluent-ffmpeg");
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+// App Initialization
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(cors());
 app.use(bodyParser.json());
+
+// 📹 **Setup Multer for Memory Storage**
 const upload = multer({
-  storage: multer.memoryStorage(),
+	storage: multer.memoryStorage(),
 });
 
-app.post("/test", upload.single("video"), (req, res) => {
-  if (!req.file || !req.file.buffer) {
-    console.error("No video data received from frontend.");
-    return res.status(400).send("No video data received.");
-  }
+// 🎥 **Stream RTMP via FFmpeg**
+let videoStream = new PassThrough();
+let isStreaming = false;
 
-  console.log(`Received video buffer of size: ${req.file.buffer.length} bytes`);
-  const videoStream = new PassThrough();
-  videoStream.end(req.file.buffer);
+function startStreaming() {
+	if (isStreaming) return;
+	isStreaming = true;
 
-  var command = ffmpeg(videoStream, { option: "value" });
+	ffmpeg(videoStream)
+		.inputFormat('webm') // Match frontend mimeType
+		.videoCodec('libx264')
+		.audioCodec('aac')
+		.outputOptions([
+			'-preset veryfast',
+			'-b:v 4500k',
+			'-maxrate 4500k',
+			'-bufsize 9000k',
+			'-pix_fmt yuv420p',
+			'-r 30',
+			'-g 60',
+			'-c:a aac',
+			'-b:a 128k',
+			'-ar 44100',
+			'-f flv',
+		])
+		.on('start', (commandLine) => {
+			console.log('FFmpeg started:', commandLine);
+		})
+		.on('error', (err) => {
+			console.error('FFmpeg error:', err);
+			isStreaming = false;
+		})
+		.on('end', () => {
+			console.log('Streaming ended');
+			isStreaming = false;
+		})
+		.save('rtmp://a.rtmp.youtube.com/live2/59sy-wt1h-ptj9-u4h4-9dde');
+}
 
-  try {
-    command
-      .inputOptions("-stream_loop -1")
+// 🎯 **Route to Receive Video Chunks**
+app.post('/upload', upload.single('video'), (req, res) => {
+	if (!req.file || !req.file.buffer) {
+		console.error('No video data received.');
+		return res.status(400).send('No video data received.');
+	}
 
-      .outputOptions([
-        "-r 30",
-        "-c:v libx264",
-        "-preset veryfast",
-        "-b:v 4500k",
-        "-maxrate 4500k",
-        "-bufsize 9000k",
-        "-c:a aac",
-        "-b:a 128k",
-        "-ar 44100",
-        "-f flv",
-      ])
-      .on("start", (commandLine) => {
-        console.log("FFmpeg started with command:", commandLine);
-      })
-      .on("progress", (progress) => {
-        console.log(progress);
-        console.log(`Processing: ${progress.frames} frames`);
-      })
-      .on("error", (err) => {
-        console.error("Error:-", err);
-      })
-      .on("end", () => {
-        console.log("Stream ended");
-      })
-      .save(rtmpUrl);
-  } catch (e) {
-    console.log("CATCH", e);
-  }
+	try {
+		if (!isStreaming) {
+			startStreaming();
+		}
+
+		videoStream.write(req.file.buffer);
+		res.status(200).send('Chunk received');
+	} catch (error) {
+		console.error('Error processing chunk:', error);
+		res.status(500).send('Error processing chunk');
+	}
 });
-app.get("/", (req, res) => {
-  res.send("Hello World!");
+
+// 🛑 **Stop Streaming**
+app.post('/stop', (req, res) => {
+	try {
+		videoStream.end();
+		isStreaming = false;
+		console.log('Streaming stopped');
+		res.status(200).send('Streaming stopped');
+	} catch (error) {
+		console.error('Error stopping stream:', error);
+		res.status(500).send('Error stopping stream');
+	}
 });
 
+// 🏠 **Health Check**
+app.get('/', (req, res) => {
+	res.send('RTMP Backend is running');
+});
+
+// 🚀 **Start the Server**
 app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
+	console.log(`🎯 Backend is running on http://localhost:${port}`);
 });
-
-const rtmpUrl = `rtmp://127.0.0.1/live/Hy90JoVSJg`;
